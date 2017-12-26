@@ -12,20 +12,12 @@ import scipy.io.wavfile as wav
 import numpy as np
 
 from six.moves import xrange as range
-
-try:
-    from python_speech_features import mfcc
-except ImportError:
-    print("Failed to import python_speech_features.\n Try pip install python_speech_features.")
-    raise ImportError
+import os
+import codecs
+from keras.preprocessing.text import text_to_word_sequence, one_hot, Tokenizer;
+from python_speech_features import mfcc
 
 def sparse_tuple_from(sequences, dtype=np.int32):
-    """Create a sparse representention of x.
-    Args:
-        sequences: a list of lists of type dtype where each element is a sequence
-    Returns:
-        A tuple with (indices, values, shape)
-    """
     indices = []
     values = []
 
@@ -37,10 +29,8 @@ def sparse_tuple_from(sequences, dtype=np.int32):
     values = np.asarray(values, dtype=dtype)
     shape = np.asarray([len(sequences), np.asarray(indices).max(0)[1]+1], dtype=np.int64)
 
-    return indices, values, shape
+    return [indices, values, shape]
 
-import codecs
-from keras.preprocessing.text import text_to_word_sequence, one_hot, Tokenizer;
 def process_text_1(label_file):
     with codecs.open(label_file, encoding="utf-8") as f:
         texts = f.read().split("\n"); #["我们 是 朋友","他们 不是 朋友", ...]
@@ -76,7 +66,6 @@ def process_text_1(label_file):
                 j += 1;
         char_length[i] = j;
     return index_char,char_index,char_length,char_vec,labels_dict
-
 
 def process_text_2(label_file):
     with codecs.open(label_file, encoding="utf-8") as f:
@@ -116,25 +105,28 @@ def process_text_2(label_file):
     return index_char,char_index,char_length,char_vec,labels_dict
 
 def process_vgg(img_path,char_index,char_length,char_vec,labels_dict):
-    import os
+
     vggfeature_tensor = []
     labels_vec = []
     labels_length = []
+    seq_length = []
     if img_path:
         for (dirpath, dirnames, filenames) in os.walk(img_path):
             for index, filename in enumerate(filenames):
-                wav_id = os.path.basename(filename).split('_')[1]
-                if labels_dict.has_key(wav_id):
-                    labels_vec.append(char_vec[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
-                    labels_length.append(char_length[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
-                    fs, audio = wav.read("BAC009S0002W0122.wav")
-                    inputs = mfcc(audio, samplerate=fs, numcep=num_features)
-                    train_inputs = np.asarray(inputs[np.newaxis, :])
-                    train_inputs = (train_inputs - np.mean(train_inputs)) / np.std(train_inputs)
-                    vggfeature_tensor.append(train_inputs.tolist())
+                if filename.endswith("wav"):
+                    wav_id = os.path.basename(filename).split('.')[0]
+                    if labels_dict.has_key(wav_id):
+                        labels_vec.append(char_vec[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
+                        labels_length.append(char_length[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
+                        fs, audio = wav.read(filename)
+                        inputs = mfcc(audio, samplerate=fs, numcep=num_features)
+                        seq_length.append(inputs.shape[0])
+                        train_inputs = np.asarray(inputs[np.newaxis, :])
+                        train_inputs = (train_inputs - np.mean(train_inputs)) / np.std(train_inputs)
+                        vggfeature_tensor.append(train_inputs)
 
                 if index % 100 == 0: print("Completed {}".format(str(index * len(filenames) ** -1)))
-    return vggfeature_tensor,labels_vec,labels_length
+    return vggfeature_tensor,np.array(labels_vec),np.array(labels_length),np.array(seq_length)
 
 
 def decode_str(index2vocab, predict):
@@ -144,58 +136,45 @@ def decode_str(index2vocab, predict):
             return str
         str += index2vocab[int(i)]
     return str
-# Some configs
-num_features = 13
-# Accounting the 0th indice +  space + blank label = 28 characters
-num_classes = 100
 
-# Hyper-parameters
-num_epochs = 200
-num_hidden = 128
+num_features = 20
+
+
+
+num_epochs = 100
+num_hidden = 256
 num_layers = 1
 batch_size = 1
 initial_learning_rate = 0.01
-momentum = 0.9
 
-num_examples = 1
+num_examples = 3
 num_batches_per_epoch = int(num_examples/batch_size)
 
-# fs, audio = wav.read("BAC009S0002W0122.wav")
 
-# inputs = mfcc(audio, samplerate=fs,numcep=num_features)
-# # Tranform in 3D array
-# train_inputs = np.asarray(inputs[np.newaxis, :])
-# train_inputs = (train_inputs - np.mean(train_inputs))/np.std(train_inputs)
+index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_small.txt")
+train_inputs,labels_vec,labels_length,train_seq_len = process_vgg(os.getcwd(),char_index,char_length,char_vec,labels_dict)
 
+new_train = np.zeros([len(train_inputs),np.max(train_seq_len),train_inputs[0].shape[2]])
+for i in range(len(train_inputs)):
+    new_train[i,:train_seq_len[i]] = train_inputs[i][0,:]
+train_inputs = new_train
+print( "label_vec_shape = %s, vocab len = %d" %(labels_vec.shape,len(index_char)))
+num_classes = len(index_char)
+train_targets = []
+for index,one_label in enumerate(labels_vec):
+    train_targets.append(sparse_tuple_from([one_label]))
 
-# index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_transcript_v0.8.txt")
-index_char,char_index,char_length,char_vec,labels_dict = process_text_2("BAC009S0002W0122.txt")
-filename = "BAC009S0002W0122.wav"
-labels_vec = char_vec[0]
-import os
-# wav_id = os.path.basename(filename).split('.')[0]
-# labels_vec = char_vec[labels_dict[wav_id]]  # labels_dict[wav_id] 保存的是序号
-# print(labels_vec.shape)
-# labels_length.append(char_length[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
-fs, audio = wav.read(filename)
-inputs = mfcc(audio, samplerate=8000)
-train_inputs = np.asarray(inputs[np.newaxis, :])
-train_inputs = (train_inputs - np.mean(train_inputs))/np.std(train_inputs)
-train_targets = sparse_tuple_from([labels_vec])
-train_seq_len = [train_inputs.shape[1]]
+# train_targets = sparse_tuple_from(labels_vec)
+# train_seq_len = [train_inputs.shape[1]]
 val_inputs, val_targets, val_seq_len = train_inputs, train_targets, train_seq_len
 
-target_str = decode_str(index_char, labels_vec)
-print(target_str)
+for i in labels_vec:
+    target_str = decode_str(index_char, i)
+    print(target_str)
 graph = tf.Graph()
 with graph.as_default():
     inputs = tf.placeholder(tf.float32, [None, None, num_features])
-
-    # Here we use sparse_placeholder that will generate a
-    # SparseTensor required by ctc_loss op.
     targets = tf.sparse_placeholder(tf.int32)
-    #dense = tf.sparse_tensor_to_dense(targets)
-    # 1d array of size [batch_size]
     seq_len = tf.placeholder(tf.int32, [None])
 
     # Defining the cell
@@ -216,7 +195,7 @@ with graph.as_default():
     shape = tf.shape(inputs)
     batch_s, max_timesteps = shape[0], shape[1]
 
-    outputs = tf.reshape(merge, [-1, num_hidden*2])
+    outputs = tf.reshape(merge, [-1, num_hidden * 2])
 
     # Truncated normal with mean 0 and stdev=0.1
     # Tip: Try another initialization
@@ -262,9 +241,9 @@ with tf.Session(graph=graph) as session:
 
         for batch in range(num_batches_per_epoch):
 
-            feed = {inputs: train_inputs,
-                    targets: train_targets,
-                    seq_len: train_seq_len}
+            feed = {inputs: train_inputs[batch * batch_size : (batch + 1) * batch_size],
+                    targets: train_targets[batch],
+                    seq_len: train_seq_len[batch * batch_size : (batch + 1) * batch_size]}
             #run_sense = session.run([dense],feed)
             batch_cost, _ = session.run([cost, optimizer], feed)
             train_cost += batch_cost*batch_size
@@ -273,24 +252,29 @@ with tf.Session(graph=graph) as session:
         train_cost /= num_examples
         train_ler /= num_examples
 
-        val_feed = {inputs: val_inputs,
-                    targets: val_targets,
-                    seq_len: val_seq_len}
 
-        val_cost, val_ler = session.run([cost, ler], feed_dict=val_feed)
+        sum_val_cost = sum_val_ler = 0.
+        for batch in range(num_batches_per_epoch):
+            val_feed = {inputs: val_inputs[batch * batch_size : (batch + 1) * batch_size],
+                    targets: val_targets[batch],
+                    seq_len: val_seq_len[batch * batch_size : (batch + 1) * batch_size]}
+            #run_sense = session.run([dense],feed)
+            val_cost, val_ler = session.run([cost, ler], feed_dict=val_feed)
+            sum_val_cost += val_cost
+            sum_val_ler += val_ler
 
         log = "Epoch {}/{}, train_cost = {:.3f}, train_ler = {:.3f}, val_cost = {:.3f}, val_ler = {:.3f}, time = {:.3f}"
         print(log.format(curr_epoch+1, num_epochs, train_cost, train_ler,
-                         val_cost, val_ler, time.time() - start))
-    # Decoding
-    d = session.run(dense, feed_dict=feed)
+                         sum_val_cost/num_batches_per_epoch, sum_val_ler/num_batches_per_epoch, time.time() - start))
 
-
-
-
-
-    str = decode_str(index_char, d[0])
-    print(str)
+    for batch in range(num_batches_per_epoch):
+        test_feed = {inputs: val_inputs[batch * batch_size: (batch + 1) * batch_size],
+                    targets: val_targets[batch],
+                    seq_len: val_seq_len[batch * batch_size: (batch + 1) * batch_size]}
+        # Decoding
+        d = session.run(dense, feed_dict=test_feed)
+        str = decode_str(index_char, d[0])
+        print(str)
 
 
 
