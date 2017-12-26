@@ -145,25 +145,25 @@ def decode_str(index2vocab, predict):
         str += index2vocab[int(i)]
     return str
 # Some configs
-num_features = 25
+num_features = 13
 # Accounting the 0th indice +  space + blank label = 28 characters
-num_classes = 5000
+num_classes = 100
 
 # Hyper-parameters
-num_epochs = 50
-num_hidden = 256
+num_epochs = 200
+num_hidden = 128
 num_layers = 1
 batch_size = 1
-initial_learning_rate = 1e-2
+initial_learning_rate = 0.01
 momentum = 0.9
 
 num_examples = 1
 num_batches_per_epoch = int(num_examples/batch_size)
 
 # fs, audio = wav.read("BAC009S0002W0122.wav")
-#
+
 # inputs = mfcc(audio, samplerate=fs,numcep=num_features)
-# Tranform in 3D array
+# # Tranform in 3D array
 # train_inputs = np.asarray(inputs[np.newaxis, :])
 # train_inputs = (train_inputs - np.mean(train_inputs))/np.std(train_inputs)
 
@@ -171,13 +171,14 @@ num_batches_per_epoch = int(num_examples/batch_size)
 # index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_transcript_v0.8.txt")
 index_char,char_index,char_length,char_vec,labels_dict = process_text_2("BAC009S0002W0122.txt")
 filename = "BAC009S0002W0122.wav"
+labels_vec = char_vec[0]
 import os
-wav_id = os.path.basename(filename).split('.')[0]
-labels_vec = char_vec[labels_dict[wav_id]]  # labels_dict[wav_id] 保存的是序号
-print(labels_vec.shape)
+# wav_id = os.path.basename(filename).split('.')[0]
+# labels_vec = char_vec[labels_dict[wav_id]]  # labels_dict[wav_id] 保存的是序号
+# print(labels_vec.shape)
 # labels_length.append(char_length[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
 fs, audio = wav.read(filename)
-inputs = mfcc(audio, samplerate=fs,numcep=num_features)
+inputs = mfcc(audio, samplerate=8000)
 train_inputs = np.asarray(inputs[np.newaxis, :])
 train_inputs = (train_inputs - np.mean(train_inputs))/np.std(train_inputs)
 train_targets = sparse_tuple_from([labels_vec])
@@ -201,20 +202,26 @@ with graph.as_default():
     # Can be:
     #   tf.nn.rnn_cell.RNNCell
     #   tf.nn.rnn_cell.GRUCell
-    #cell = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple=True)
-    cell = tf.contrib.rnn.GRUCell(num_hidden)
-    stack = tf.contrib.rnn.MultiRNNCell([cell] * num_layers,state_is_tuple=True)
-    outputs, _ = tf.nn.dynamic_rnn(stack, inputs, seq_len, dtype=tf.float32)
+    # # cell = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple=True)
+    # f1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
+    # b1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
 
+    f1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
+    b1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
+    outputs, _ = tf.nn.bidirectional_dynamic_rnn(f1_cell,b1_cell,inputs,seq_len,dtype=tf.float32)
+    # cell = tf.contrib.rnn.GRUCell(num_hidden)
+    # stack = tf.contrib.rnn.MultiRNNCell([cell] * num_layers,state_is_tuple=True)
+    # outputs, _ = tf.nn.dynamic_rnn(stack, inputs, seq_len, dtype=tf.float32)
+    merge = tf.concat(outputs,axis = 2)
     shape = tf.shape(inputs)
     batch_s, max_timesteps = shape[0], shape[1]
 
-    outputs = tf.reshape(outputs, [-1, num_hidden])
+    outputs = tf.reshape(merge, [-1, num_hidden*2])
 
     # Truncated normal with mean 0 and stdev=0.1
     # Tip: Try another initialization
     # see https://www.tensorflow.org/versions/r0.9/api_docs/python/contrib.layers.html#initializers
-    W = tf.Variable(tf.truncated_normal([num_hidden,
+    W = tf.Variable(tf.truncated_normal([num_hidden * 2,
                                          num_classes],
                                         stddev=0.1))
     # Zero initialization
@@ -233,8 +240,8 @@ with graph.as_default():
     loss = tf.nn.ctc_loss(targets, logits, seq_len)
     cost = tf.reduce_mean(loss)
 
-    optimizer = tf.train.MomentumOptimizer(initial_learning_rate,0.9).minimize(cost)#效果更快
-    # optimizer = tf.train.AdamOptimizer(initial_learning_rate).minimize(cost)
+    # optimizer = tf.train.MomentumOptimizer(initial_learning_rate,momentum).minimize(cost)#效果更快
+    optimizer = tf.train.AdamOptimizer(initial_learning_rate).minimize(cost)
 
     # Option 2: tf.nn.ctc_beam_search_decoder
     # (it's slower but you'll get better results)
