@@ -101,13 +101,57 @@ def decode_str(index2vocab, predict):
         str += index2vocab[int(i)]
     return str
 
+class Model():
+    def __init__(self,num_features,num_hidden,num_classes):
+        self.inputs = tf.placeholder(tf.float32, [None, None, num_features])
+        self.targets = tf.sparse_placeholder(tf.int32)
+        self.seq_len = tf.placeholder(tf.int32, [None])
+
+        # # cell = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple=True)
+        # f1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
+        # b1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
+
+        f1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
+        b1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
+        outputs, _ = tf.nn.bidirectional_dynamic_rnn(f1_cell, b1_cell, self.inputs, self.seq_len, dtype=tf.float32)
+        # cell = tf.contrib.rnn.GRUCell(num_hidden)
+        # stack = tf.contrib.rnn.MultiRNNCell([cell] * num_layers,state_is_tuple=True)
+        # outputs, _ = tf.nn.dynamic_rnn(stack, inputs, seq_len, dtype=tf.float32)
+        merge = tf.concat(outputs, axis=2)
+        shape = tf.shape(self.inputs)
+        batch_s, max_timesteps = shape[0], shape[1]
+
+        outputs = tf.reshape(merge, [-1, num_hidden * 2])
+        W = tf.Variable(tf.truncated_normal([num_hidden * 2,
+                                             num_classes],
+                                            stddev=0.1))
+        b = tf.Variable(tf.constant(0., shape=[num_classes]))
+        logits = tf.matmul(outputs, W) + b
+        logits = tf.reshape(logits, [batch_s, -1, num_classes])
+        logits = tf.transpose(logits, (1, 0, 2))
+        loss = tf.nn.ctc_loss(self.targets, logits, self.seq_len)
+        self.cost = tf.reduce_mean(loss)
+
+        # optimizer = tf.train.MomentumOptimizer(initial_learning_rate,momentum).minimize(cost)#效果更快
+        self.optimizer = tf.train.AdamOptimizer(initial_learning_rate).minimize(self.cost)
+
+        # Option 2: tf.nn.ctc_beam_search_decoder
+        # (it's slower but you'll get better results)
+        decoded, log_prob = tf.nn.ctc_greedy_decoder(logits, self.seq_len)
+        self.dense = tf.sparse_to_dense(decoded[0].indices, decoded[0].dense_shape, decoded[0].values)
+        self.ler = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), self.targets))
 
 
 num_features = 20
+num_epochs = 50
+num_hidden = 512
+num_layers = 1
+batch_size = 1
+initial_learning_rate = 0.01
+
 index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_small.txt")
 train_inputs,labels_vec,labels_length,train_seq_len = \
-    process_vgg("/mnt/steven/data/data_aishell/wav/train/S0002",
-                char_index,char_length,char_vec,labels_dict)
+    process_vgg(os.getcwd(),char_index,char_length,char_vec,labels_dict)
 
 new_train = np.zeros([len(train_inputs),np.max(train_seq_len),train_inputs[0].shape[2]])
 for i in range(len(train_inputs)):
@@ -115,13 +159,6 @@ for i in range(len(train_inputs)):
 train_inputs = new_train
 print( "label_vec_shape = %s, vocab len = %d" %(labels_vec.shape,len(index_char)))
 num_classes = len(index_char) + 2
-
-num_epochs = 50
-num_hidden = 512
-num_layers = 1
-batch_size = 1
-initial_learning_rate = 0.01
-
 num_examples = train_inputs.shape[0]
 num_batches_per_epoch = int(num_examples/batch_size)
 train_targets = []
@@ -135,67 +172,11 @@ val_inputs, val_targets, val_seq_len = train_inputs, train_targets, train_seq_le
 for i in labels_vec:
     target_str = decode_str(index_char, i)
     print(target_str)
-graph = tf.Graph()
-with graph.as_default():
-    inputs = tf.placeholder(tf.float32, [None, None, num_features])
-    targets = tf.sparse_placeholder(tf.int32)
-    seq_len = tf.placeholder(tf.int32, [None])
-
-    # Defining the cell
-    # Can be:
-    #   tf.nn.rnn_cell.RNNCell
-    #   tf.nn.rnn_cell.GRUCell
-    # # cell = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple=True)
-    # f1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
-    # b1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
-
-    f1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
-    b1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
-    outputs, _ = tf.nn.bidirectional_dynamic_rnn(f1_cell,b1_cell,inputs,seq_len,dtype=tf.float32)
-    # cell = tf.contrib.rnn.GRUCell(num_hidden)
-    # stack = tf.contrib.rnn.MultiRNNCell([cell] * num_layers,state_is_tuple=True)
-    # outputs, _ = tf.nn.dynamic_rnn(stack, inputs, seq_len, dtype=tf.float32)
-    merge = tf.concat(outputs,axis = 2)
-    shape = tf.shape(inputs)
-    batch_s, max_timesteps = shape[0], shape[1]
-
-    outputs = tf.reshape(merge, [-1, num_hidden * 2])
-
-    # Truncated normal with mean 0 and stdev=0.1
-    # Tip: Try another initialization
-    # see https://www.tensorflow.org/versions/r0.9/api_docs/python/contrib.layers.html#initializers
-    W = tf.Variable(tf.truncated_normal([num_hidden * 2,
-                                         num_classes],
-                                        stddev=0.1))
-    # Zero initialization
-    # Tip: Is tf.zeros_initializer the same?
-    b = tf.Variable(tf.constant(0., shape=[num_classes]))
-
-    # Doing the affine projection
-    logits = tf.matmul(outputs, W) + b
-
-    # Reshaping back to the original shape
-    logits = tf.reshape(logits, [batch_s, -1, num_classes])
-
-    # Time major
-    logits = tf.transpose(logits, (1, 0, 2))
-
-    loss = tf.nn.ctc_loss(targets, logits, seq_len)
-    cost = tf.reduce_mean(loss)
-
-    # optimizer = tf.train.MomentumOptimizer(initial_learning_rate,momentum).minimize(cost)#效果更快
-    optimizer = tf.train.AdamOptimizer(initial_learning_rate).minimize(cost)
-
-    # Option 2: tf.nn.ctc_beam_search_decoder
-    # (it's slower but you'll get better results)
-    decoded, log_prob = tf.nn.ctc_greedy_decoder(logits, seq_len)
-    dense = tf.sparse_to_dense(decoded[0].indices,decoded[0].dense_shape,decoded[0].values)
-    # Inaccuracy: label error rate
-    ler = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32),
-                                          targets))
-
-with tf.Session(graph=graph) as session:
-    # Initializate the weights and biases
+# graph = tf.Graph()
+# with graph.as_default():
+#     None
+asr_model = Model(num_features,num_hidden,num_classes)
+with tf.Session() as session:
     tf.global_variables_initializer().run()
 
 
@@ -205,13 +186,13 @@ with tf.Session(graph=graph) as session:
 
         for batch in range(num_batches_per_epoch):
 
-            feed = {inputs: train_inputs[batch * batch_size : (batch + 1) * batch_size],
-                    targets: train_targets[batch],
-                    seq_len: train_seq_len[batch * batch_size : (batch + 1) * batch_size]}
+            feed = {asr_model.inputs: train_inputs[batch * batch_size : (batch + 1) * batch_size],
+                    asr_model.targets: train_targets[batch],
+                    asr_model.seq_len: train_seq_len[batch * batch_size : (batch + 1) * batch_size]}
             #run_sense = session.run([dense],feed)
-            batch_cost, _ = session.run([cost, optimizer], feed)
+            batch_cost, _ = session.run([asr_model.cost, asr_model.optimizer], feed)
             train_cost += batch_cost*batch_size
-            train_ler += session.run(ler, feed_dict=feed)*batch_size
+            train_ler += session.run(asr_model.ler, feed_dict=feed)*batch_size
 
         train_cost /= num_examples
         train_ler /= num_examples
@@ -219,11 +200,11 @@ with tf.Session(graph=graph) as session:
 
         sum_val_cost = sum_val_ler = 0.
         for batch in range(num_batches_per_epoch):
-            val_feed = {inputs: val_inputs[batch * batch_size : (batch + 1) * batch_size],
-                    targets: val_targets[batch],
-                    seq_len: val_seq_len[batch * batch_size : (batch + 1) * batch_size]}
+            val_feed = {asr_model.inputs: val_inputs[batch * batch_size : (batch + 1) * batch_size],
+                        asr_model.targets: val_targets[batch],
+                        asr_model.seq_len: val_seq_len[batch * batch_size : (batch + 1) * batch_size]}
             #run_sense = session.run([dense],feed)
-            val_cost, val_ler = session.run([cost, ler], feed_dict=val_feed)
+            val_cost, val_ler = session.run([asr_model.cost, asr_model.ler], feed_dict=val_feed)
             sum_val_cost += val_cost
             sum_val_ler += val_ler
 
@@ -232,11 +213,11 @@ with tf.Session(graph=graph) as session:
                          sum_val_cost/num_batches_per_epoch, sum_val_ler/num_batches_per_epoch, time.time() - start))
 
     for batch in range(num_batches_per_epoch):
-        test_feed = {inputs: val_inputs[batch * batch_size: (batch + 1) * batch_size],
-                    targets: val_targets[batch],
-                    seq_len: val_seq_len[batch * batch_size: (batch + 1) * batch_size]}
+        test_feed = {asr_model.inputs: val_inputs[batch * batch_size: (batch + 1) * batch_size],
+                     asr_model.targets: val_targets[batch],
+                     asr_model.seq_len: val_seq_len[batch * batch_size: (batch + 1) * batch_size]}
         # Decoding
-        d = session.run(dense, feed_dict=test_feed)
+        d = session.run(asr_model.dense, feed_dict=test_feed)
         str = decode_str(index_char, d[0])
         print(str)
 
