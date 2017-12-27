@@ -31,42 +31,6 @@ def sparse_tuple_from(sequences, dtype=np.int32):
 
     return [indices, values, shape]
 
-def process_text_1(label_file):
-    with codecs.open(label_file, encoding="utf-8") as f:
-        texts = f.read().split("\n"); #["我们 是 朋友","他们 不是 朋友", ...]
-    del texts[-1]
-    # print "texts len = %s" % len(texts)
-    #print "texts[0] content: \n %s" %texts[0]
-
-    texts = [i.split(" ") for i in texts] #把一句话拆分成词保存在texts中, [["我们","是"，"朋友"]，["他们"，"不是"，"朋友"]，...]
-    all_words = [];   #这里面保存了所有的词，存在重复
-    maxlen_char = 0;  #maxlen_char 是所有句子中字数最多
-    labels_dict = {}  # 保存映射 ，当图片个数跟 句子个数不匹配的时候，以句子的标签为基准
-    for i in np.arange(0, len(texts)):
-        length = 0;
-        labels_dict[texts[i][0]] = i
-        for j in texts[i]:
-            length += len(j);  #统计一句话中的字数，注意不是词数
-        if maxlen_char <= length: maxlen_char = length;
-        for j in np.arange(0, len(texts[i])):
-            all_words.append(texts[i][j]);
-
-    tok = Tokenizer(char_level=True);
-    tok.fit_on_texts(all_words);
-    char_index = tok.word_index;  # vocab 全部转为了字编码，char_level=True这个参数很重要，如果为False，那么继续是词的编码
-    index_char = dict((char_index[i], i) for i in char_index);  #编码 --> 字
-    char_vec = np.zeros((len(texts), maxlen_char), dtype=np.float32)  # 句子 --> 编码向量
-    char_length = np.zeros((len(texts), 1), dtype=np.float32)   # 句子中字数
-
-    for i in np.arange(0, len(texts)):
-        j = 0;
-        for i1 in texts[i][:]:
-            for ele in i1:
-                char_vec[i, j] = char_index[ele];
-                j += 1;
-        char_length[i] = j;
-    return index_char,char_index,char_length,char_vec,labels_dict
-
 def process_text_2(label_file):
     with codecs.open(label_file, encoding="utf-8") as f:
         texts = f.read().split("\n"); #["我们 是 朋友","他们 不是 朋友", ...]
@@ -118,7 +82,7 @@ def process_vgg(img_path,char_index,char_length,char_vec,labels_dict):
                     if labels_dict.has_key(wav_id):
                         labels_vec.append(char_vec[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
                         labels_length.append(char_length[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
-                        fs, audio = wav.read(filename)
+                        fs, audio = wav.read(os.path.join(dirpath,filename))
                         inputs = mfcc(audio, samplerate=fs, numcep=num_features)
                         seq_length.append(inputs.shape[0])
                         train_inputs = np.asarray(inputs[np.newaxis, :])
@@ -137,29 +101,29 @@ def decode_str(index2vocab, predict):
         str += index2vocab[int(i)]
     return str
 
+
+
 num_features = 20
-
-
-
-num_epochs = 100
-num_hidden = 256
-num_layers = 1
-batch_size = 1
-initial_learning_rate = 0.01
-
-num_examples = 3
-num_batches_per_epoch = int(num_examples/batch_size)
-
-
 index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_small.txt")
-train_inputs,labels_vec,labels_length,train_seq_len = process_vgg(os.getcwd(),char_index,char_length,char_vec,labels_dict)
+train_inputs,labels_vec,labels_length,train_seq_len = \
+    process_vgg("/mnt/steven/data/data_aishell/wav/train/S0002",
+                char_index,char_length,char_vec,labels_dict)
 
 new_train = np.zeros([len(train_inputs),np.max(train_seq_len),train_inputs[0].shape[2]])
 for i in range(len(train_inputs)):
     new_train[i,:train_seq_len[i]] = train_inputs[i][0,:]
 train_inputs = new_train
 print( "label_vec_shape = %s, vocab len = %d" %(labels_vec.shape,len(index_char)))
-num_classes = len(index_char)
+num_classes = len(index_char) + 2
+
+num_epochs = 50
+num_hidden = 512
+num_layers = 1
+batch_size = 1
+initial_learning_rate = 0.01
+
+num_examples = train_inputs.shape[0]
+num_batches_per_epoch = int(num_examples/batch_size)
 train_targets = []
 for index,one_label in enumerate(labels_vec):
     train_targets.append(sparse_tuple_from([one_label]))
