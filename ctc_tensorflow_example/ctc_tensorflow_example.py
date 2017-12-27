@@ -144,11 +144,12 @@ class Model():
 
 num_features = 20
 num_epochs = 50
-num_hidden = 512
+num_hidden = 256
 num_layers = 1
-batch_size = 1
+batch_size = 2
 initial_learning_rate = 0.01
 
+#生成训练数据
 index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_small.txt")
 train_inputs,labels_vec,labels_length,train_seq_len = \
     process_vgg(os.getcwd(),char_index,char_length,char_vec,labels_dict)
@@ -158,24 +159,25 @@ for i in range(len(train_inputs)):
     new_train[i,:train_seq_len[i]] = train_inputs[i][0,:]
 train_inputs = new_train
 print( "label_vec_shape = %s, vocab len = %d" %(labels_vec.shape,len(index_char)))
+
+#根据训练数据 设置参数
 num_classes = len(index_char) + 2
 num_examples = train_inputs.shape[0]
 num_batches_per_epoch = int(num_examples/batch_size)
 train_targets = []
-for index,one_label in enumerate(labels_vec):
-    train_targets.append(sparse_tuple_from([one_label]))
+for index in range(labels_vec.shape[0] // batch_size):
+    train_targets.append(sparse_tuple_from(labels_vec[index * batch_size : (index+1)*batch_size,:]))
 
-# train_targets = sparse_tuple_from(labels_vec)
-# train_seq_len = [train_inputs.shape[1]]
+#设置验证集合
 val_inputs, val_targets, val_seq_len = train_inputs, train_targets, train_seq_len
 
 for i in labels_vec:
     target_str = decode_str(index_char, i)
     print(target_str)
-# graph = tf.Graph()
-# with graph.as_default():
-#     None
+
+#设置模型
 asr_model = Model(num_features,num_hidden,num_classes)
+
 with tf.Session() as session:
     tf.global_variables_initializer().run()
 
@@ -217,9 +219,10 @@ with tf.Session() as session:
                      asr_model.targets: val_targets[batch],
                      asr_model.seq_len: val_seq_len[batch * batch_size: (batch + 1) * batch_size]}
         # Decoding
-        d = session.run(asr_model.dense, feed_dict=test_feed)
-        str = decode_str(index_char, d[0])
-        print(str)
+        dense = session.run(asr_model.dense, feed_dict=test_feed)
+        for i in range(batch_size):
+            str = decode_str(index_char, dense[i])
+            print(str)
 
 
 
