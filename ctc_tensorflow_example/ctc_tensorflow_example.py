@@ -92,7 +92,6 @@ def process_vgg(img_path,char_index,char_length,char_vec,labels_dict):
                 if index % 100 == 0: print("Completed {}".format(str(index * len(filenames) ** -1)))
     return vggfeature_tensor,np.array(labels_vec),np.array(labels_length),np.array(seq_length)
 
-
 def decode_str(index2vocab, predict):
     str = ""
     for i in predict:
@@ -102,6 +101,10 @@ def decode_str(index2vocab, predict):
     return str
 
 class Model():
+    def get_layer_shape(self, layer):
+        thisshape = tf.Tensor.get_shape(layer)
+        ts = [thisshape[i].value for i in range(len(thisshape))]
+        return ts
     def __init__(self,num_features,num_hidden,num_classes):
         self.inputs = tf.placeholder(tf.float32, [None, None, num_features])
         self.targets = tf.sparse_placeholder(tf.int32)
@@ -110,21 +113,29 @@ class Model():
         # # cell = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple=True)
         # f1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
         # b1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
+        with tf.variable_scope("cell_def_1"):
+            f1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
+            b1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
+            outputs, _ = tf.nn.bidirectional_dynamic_rnn(f1_cell, b1_cell, self.inputs, self.seq_len, dtype=tf.float32)
+        merge = tf.concat(outputs, axis=2)
 
-        f1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
-        b1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
-        outputs, _ = tf.nn.bidirectional_dynamic_rnn(f1_cell, b1_cell, self.inputs, self.seq_len, dtype=tf.float32)
+
+        nb_hidden_2 = num_hidden * 2
+        with tf.variable_scope("cell_def_2"):
+            f2_cell = tf.nn.rnn_cell.GRUCell(nb_hidden_2)
+            b2_cell = tf.nn.rnn_cell.GRUCell(nb_hidden_2)
+            outputs2, _ = tf.nn.bidirectional_dynamic_rnn(f2_cell, b2_cell, merge,sequence_length=self.seq_len,dtype=tf.float32)
+
+        merge2 = tf.concat(outputs2,axis=2)
         # cell = tf.contrib.rnn.GRUCell(num_hidden)
         # stack = tf.contrib.rnn.MultiRNNCell([cell] * num_layers,state_is_tuple=True)
         # outputs, _ = tf.nn.dynamic_rnn(stack, inputs, seq_len, dtype=tf.float32)
-        merge = tf.concat(outputs, axis=2)
+
         shape = tf.shape(self.inputs)
         batch_s, max_timesteps = shape[0], shape[1]
 
-        outputs = tf.reshape(merge, [-1, num_hidden * 2])
-        W = tf.Variable(tf.truncated_normal([num_hidden * 2,
-                                             num_classes],
-                                            stddev=0.1))
+        outputs = tf.reshape(merge2, [-1, self.get_layer_shape(merge2)[-1]])
+        W = tf.Variable(tf.truncated_normal([self.get_layer_shape(merge2)[-1],num_classes],stddev=0.1))
         b = tf.Variable(tf.constant(0., shape=[num_classes]))
         logits = tf.matmul(outputs, W) + b
         logits = tf.reshape(logits, [batch_s, -1, num_classes])
@@ -144,7 +155,7 @@ class Model():
 
 num_features = 20
 num_epochs = 50
-num_hidden = 256
+num_hidden = 128
 num_layers = 1
 batch_size = 2
 initial_learning_rate = 0.01
