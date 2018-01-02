@@ -68,28 +68,35 @@ def process_text_2(label_file):
         char_length[i] = j;
     return index_char,char_index,char_length,char_vec,labels_dict
 
-def process_vgg(img_path,char_index,char_length,char_vec,labels_dict):
+def process_vgg(img_path,char_index,char_length,char_vec,labels_dict,compute_sample_num):
 
     vggfeature_tensor = []
     labels_vec = []
     labels_length = []
     seq_length = []
+    sample_index = 0
     if img_path:
-        for (dirpath, dirnames, filenames) in os.walk(img_path):
-            for index, filename in enumerate(filenames):
-                if filename.endswith("wav"):
-                    wav_id = os.path.basename(filename).split('.')[0]
-                    if labels_dict.has_key(wav_id):
-                        labels_vec.append(char_vec[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
-                        labels_length.append(char_length[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
-                        fs, audio = wav.read(os.path.join(dirpath,filename))
-                        inputs = mfcc(audio, samplerate=fs, numcep=num_features)
-                        seq_length.append(inputs.shape[0])
-                        train_inputs = np.asarray(inputs[np.newaxis, :])
-                        train_inputs = (train_inputs - np.mean(train_inputs)) / np.std(train_inputs)
-                        vggfeature_tensor.append(train_inputs)
+        for (dirpath_1,dirnames_1,_) in os.walk(img_path):
+            for one_dir in sorted(dirnames_1):
+                for (dirpath_2, _, filenames_2) in os.walk(os.path.join(dirpath_1,one_dir)):
+                    for index, filename in enumerate(sorted(filenames_2)):
+                        if filename.endswith("wav"):
+                            wav_id = os.path.basename(filename).split('.')[0]
+                            if labels_dict.has_key(wav_id):
+                                labels_vec.append(char_vec[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
+                                labels_length.append(char_length[labels_dict[wav_id]])  # labels_dict[wav_id] 保存的是序号
+                                fs, audio = wav.read(os.path.join(dirpath_2,filename))
+                                inputs = mfcc(audio, samplerate=fs, numcep=num_features)
+                                seq_length.append(inputs.shape[0])
+                                train_inputs = np.asarray(inputs[np.newaxis, :])
+                                train_inputs = (train_inputs - np.mean(train_inputs)) / np.std(train_inputs)
+                                vggfeature_tensor.append(train_inputs)
+                                sample_index = sample_index + 1
+                                if sample_index >= compute_sample_num:
+                                    return vggfeature_tensor, np.array(labels_vec), np.array(labels_length), np.array(
+                                    seq_length)
 
-                if index % 100 == 0: print("Completed {}".format(str(index * len(filenames) ** -1)))
+                        if sample_index % 100 == 0: print("Completed {}".format(str(sample_index * compute_sample_num ** -1)))
     return vggfeature_tensor,np.array(labels_vec),np.array(labels_length),np.array(seq_length)
 
 def decode_str(index2vocab, predict):
@@ -154,16 +161,18 @@ class Model():
 
 
 num_features = 20
-num_epochs = 50
+num_epochs = 200
 num_hidden = 128
 num_layers = 1
-batch_size = 2
+batch_size = 50
 initial_learning_rate = 0.01
+compute_sample_num = 100
+use_train_model = True
 
 #生成训练数据
 index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_small.txt")
 train_inputs,labels_vec,labels_length,train_seq_len = \
-    process_vgg(os.getcwd(),char_index,char_length,char_vec,labels_dict)
+    process_vgg("/mnt/steven/data/data_aishell/wav/train",char_index,char_length,char_vec,labels_dict,compute_sample_num)
 
 new_train = np.zeros([len(train_inputs),np.max(train_seq_len),train_inputs[0].shape[2]])
 for i in range(len(train_inputs)):
@@ -188,9 +197,17 @@ for i in labels_vec:
 
 #设置模型
 asr_model = Model(num_features,num_hidden,num_classes)
-
+saver = tf.train.Saver()
+save_path = os.path.join(os.getcwd(),"checkpoint_dir")
+if os.path.isdir(save_path):
+    None
+else:
+    os.mkdir(save_path)
 with tf.Session() as session:
-    tf.global_variables_initializer().run()
+    if use_train_model:
+        saver.restore(session, tf.train.latest_checkpoint(save_path))
+    else:
+        tf.global_variables_initializer().run()
 
 
     for curr_epoch in range(num_epochs):
@@ -220,7 +237,8 @@ with tf.Session() as session:
             val_cost, val_ler = session.run([asr_model.cost, asr_model.ler], feed_dict=val_feed)
             sum_val_cost += val_cost
             sum_val_ler += val_ler
-
+        if curr_epoch % 10 == 0:
+            saver.save(session,save_path+"/",global_step = curr_epoch)
         log = "Epoch {}/{}, train_cost = {:.3f}, train_ler = {:.3f}, val_cost = {:.3f}, val_ler = {:.3f}, time = {:.3f}"
         print(log.format(curr_epoch+1, num_epochs, train_cost, train_ler,
                          sum_val_cost/num_batches_per_epoch, sum_val_ler/num_batches_per_epoch, time.time() - start))
