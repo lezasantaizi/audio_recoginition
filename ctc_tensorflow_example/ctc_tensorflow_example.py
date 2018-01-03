@@ -4,6 +4,7 @@
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
+from functools import wraps
 
 import time
 
@@ -16,6 +17,19 @@ import os
 import codecs
 from keras.preprocessing.text import text_to_word_sequence, one_hot, Tokenizer;
 from python_speech_features import mfcc
+
+def describe(func):
+    ''' wrap function,to add some descriptions for function and its running time
+    '''
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        print(func.__name__+'...')
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        print(str(func.__name__+' in '+ str(end-start)+' s'))
+        return result
+    return wrapper
 
 def sparse_tuple_from(sequences, dtype=np.int32):
     indices = []
@@ -30,7 +44,7 @@ def sparse_tuple_from(sequences, dtype=np.int32):
     shape = np.asarray([len(sequences), np.asarray(indices).max(0)[1]+1], dtype=np.int64)
 
     return [indices, values, shape]
-
+@describe
 def process_text_2(label_file):
     with codecs.open(label_file, encoding="utf-8") as f:
         texts = f.read().split("\n"); #["我们 是 朋友","他们 不是 朋友", ...]
@@ -67,7 +81,7 @@ def process_text_2(label_file):
                 j += 1;
         char_length[i] = j;
     return index_char,char_index,char_length,char_vec,labels_dict
-
+@describe
 def process_vgg(img_path,char_index,char_length,char_vec,labels_dict,compute_sample_num):
 
     vggfeature_tensor = []
@@ -107,13 +121,28 @@ def decode_str(index2vocab, predict):
         str += index2vocab[int(i)]
     return str
 
+
+
+@describe
+def count_params(model, mode='trainable'):
+    ''' count all parameters of a tensorflow graph
+    '''
+    if mode == 'all':
+        num = np.sum([np.product([xi.value for xi in x.get_shape()]) for x in model.var_op])
+    elif mode == 'trainable':
+        num = np.sum([np.product([xi.value for xi in x.get_shape()]) for x in model.var_trainable_op])
+    else:
+        raise TypeError('mode should be all or trainable.')
+    print('number of '+mode+' parameters: '+str(num))
+    return num
+
 class Model():
     def get_layer_shape(self, layer):
         thisshape = tf.Tensor.get_shape(layer)
         ts = [thisshape[i].value for i in range(len(thisshape))]
         return ts
-    def __init__(self,num_features,num_hidden,num_classes):
-        self.inputs = tf.placeholder(tf.float32, [None, None, num_features])
+    def __init__(self,num_features,num_layers,num_hidden,num_classes,batch_size,max_seq_len):
+        self.inputs = tf.placeholder(tf.float32, [batch_size, max_seq_len, num_features])
         self.targets = tf.sparse_placeholder(tf.int32)
         self.seq_len = tf.placeholder(tf.int32, [None])
 
@@ -152,8 +181,20 @@ class Model():
         decoded, log_prob = tf.nn.ctc_greedy_decoder(logits, self.seq_len)
         self.dense = tf.sparse_to_dense(decoded[0].indices, decoded[0].dense_shape, decoded[0].values)
         self.ler = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), self.targets))
+        self.var_op = tf.global_variables()
+        self.var_trainable_op = tf.trainable_variables()
 
 #生成训练数据
+
+num_features = 20
+num_epochs = 300
+num_hidden = 256
+num_layers = 2
+batch_size = 50
+initial_learning_rate = 0.01
+compute_sample_num = 500
+keep = False
+
 index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_small.txt")
 train_inputs,labels_vec,labels_length,train_seq_len = \
     process_vgg("/mnt/steven/data/data_aishell/wav/train",char_index,char_length,char_vec,labels_dict,compute_sample_num)
@@ -165,14 +206,6 @@ train_inputs = new_train
 print( "label_vec_shape = %s, vocab len = %d" %(labels_vec.shape,len(index_char)))
 
 #根据训练数据 设置参数
-num_features = 20
-num_epochs = 300
-num_hidden = 256
-num_layers = 1
-batch_size = 50
-initial_learning_rate = 0.01
-compute_sample_num = 200
-use_train_model = False
 num_classes = len(index_char) + 2
 num_examples = train_inputs.shape[0]
 
@@ -191,7 +224,9 @@ for i in labels_vec:
     print(target_str)
 
 #设置模型
-asr_model = Model(num_features,num_hidden,num_classes)
+asr_model = Model(num_features,num_layers,num_hidden,num_classes,batch_size,np.max(train_seq_len))
+num_params = count_params(asr_model, mode='trainable')
+print("num_params = %d " % num_params)
 saver = tf.train.Saver()
 save_path = os.path.join(os.getcwd(),"checkpoint_dir")
 if os.path.isdir(save_path):
@@ -199,9 +234,11 @@ if os.path.isdir(save_path):
 else:
     os.mkdir(save_path)
 with tf.Session() as session:
-    if use_train_model:
+    if keep:
         saver.restore(session, tf.train.latest_checkpoint(save_path))
+        print('Model restored from:' + save_path)
     else:
+        print('Initializing')
         tf.global_variables_initializer().run()
 
 
