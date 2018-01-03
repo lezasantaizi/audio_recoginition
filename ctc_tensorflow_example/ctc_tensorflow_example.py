@@ -120,29 +120,23 @@ class Model():
         # # cell = tf.contrib.rnn.LSTMCell(num_hidden, state_is_tuple=True)
         # f1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
         # b1_cell = tf.nn.rnn_cell.LSTMCell(num_hidden,state_is_tuple=True)
-        with tf.variable_scope("cell_def_1"):
+        inputs = self.inputs
+        for i in range(num_layers):
             f1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
             b1_cell = tf.nn.rnn_cell.GRUCell(num_hidden)
-            outputs, _ = tf.nn.bidirectional_dynamic_rnn(f1_cell, b1_cell, self.inputs, self.seq_len, dtype=tf.float32)
-        merge = tf.concat(outputs, axis=2)
-
-
-        nb_hidden_2 = num_hidden * 2
-        with tf.variable_scope("cell_def_2"):
-            f2_cell = tf.nn.rnn_cell.GRUCell(nb_hidden_2)
-            b2_cell = tf.nn.rnn_cell.GRUCell(nb_hidden_2)
-            outputs2, _ = tf.nn.bidirectional_dynamic_rnn(f2_cell, b2_cell, merge,sequence_length=self.seq_len,dtype=tf.float32)
-
-        merge2 = tf.concat(outputs2,axis=2)
-        # cell = tf.contrib.rnn.GRUCell(num_hidden)
-        # stack = tf.contrib.rnn.MultiRNNCell([cell] * num_layers,state_is_tuple=True)
-        # outputs, _ = tf.nn.dynamic_rnn(stack, inputs, seq_len, dtype=tf.float32)
+            scope = 'bilstm_' + str(i + 1)
+            outputs, _ = tf.nn.bidirectional_dynamic_rnn(f1_cell, b1_cell, inputs, self.seq_len, dtype=tf.float32,scope= scope)
+            merge = tf.concat(outputs, axis=2)
+            shape = merge.get_shape().as_list()
+            output_fb = tf.reshape(merge, [shape[0], shape[1], 2, int(shape[2] / 2)])
+            inputs = tf.reduce_sum(output_fb, 2)
+            #inputs = tf.contrib.layers.dropout(merge, keep_prob=keep_prob, is_training=is_training)
 
         shape = tf.shape(self.inputs)
         batch_s, max_timesteps = shape[0], shape[1]
 
-        outputs = tf.reshape(merge2, [-1, self.get_layer_shape(merge2)[-1]])
-        W = tf.Variable(tf.truncated_normal([self.get_layer_shape(merge2)[-1],num_classes],stddev=0.1))
+        outputs = tf.reshape(inputs, [-1, self.get_layer_shape(inputs)[-1]])
+        W = tf.Variable(tf.truncated_normal([self.get_layer_shape(inputs)[-1],num_classes],stddev=0.1))
         b = tf.Variable(tf.constant(0., shape=[num_classes]))
         logits = tf.matmul(outputs, W) + b
         logits = tf.reshape(logits, [batch_s, -1, num_classes])
@@ -159,16 +153,6 @@ class Model():
         self.dense = tf.sparse_to_dense(decoded[0].indices, decoded[0].dense_shape, decoded[0].values)
         self.ler = tf.reduce_mean(tf.edit_distance(tf.cast(decoded[0], tf.int32), self.targets))
 
-
-num_features = 20
-num_epochs = 200
-num_hidden = 128
-num_layers = 1
-batch_size = 50
-initial_learning_rate = 0.01
-compute_sample_num = 100
-use_train_model = True
-
 #生成训练数据
 index_char,char_index,char_length,char_vec,labels_dict = process_text_2("aishell_small.txt")
 train_inputs,labels_vec,labels_length,train_seq_len = \
@@ -181,9 +165,20 @@ train_inputs = new_train
 print( "label_vec_shape = %s, vocab len = %d" %(labels_vec.shape,len(index_char)))
 
 #根据训练数据 设置参数
+num_features = 20
+num_epochs = 300
+num_hidden = 256
+num_layers = 1
+batch_size = 50
+initial_learning_rate = 0.01
+compute_sample_num = 200
+use_train_model = False
 num_classes = len(index_char) + 2
 num_examples = train_inputs.shape[0]
+
 num_batches_per_epoch = int(num_examples/batch_size)
+
+
 train_targets = []
 for index in range(labels_vec.shape[0] // batch_size):
     train_targets.append(sparse_tuple_from(labels_vec[index * batch_size : (index+1)*batch_size,:]))
